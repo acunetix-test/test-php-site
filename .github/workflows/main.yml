@@ -1,0 +1,85 @@
+# main.yml
+name: Vulnerability Testing
+on:
+  push:
+    branches:
+      - main
+env:
+  MyAXURL: 'https://online.acunetix.com/api/v1'
+  MyTargetURL: 'http://acunetixexample.com:8080'
+  MyTargetDESC: 'Test PHP Site - created via GitHub-to-Acunetix CI/CD integration'
+  ScanProfileID: '11111111-1111-1111-1111-111111111111'
+  
+jobs:
+  deploy:
+    name: Deploy product to Docker Host
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout_code
+        uses: actions/checkout@v2
+      - name: create_docker_folder
+        uses: garygrossgarten/github-action-ssh@release
+        with:
+          host: ${{ secrets.DOCKER_HOST }}
+          username: ${{ secrets.DOCKER_USER }}
+          privateKey: ${{ secrets.DOCKER_KEY}}
+          command: mkdir -p ~/test-php-site
+      - name: copy_files_to_docker_folder
+        uses: garygrossgarten/github-action-scp@release
+        with: 
+          host: ${{ secrets.DOCKER_HOST }}
+          username: ${{ secrets.DOCKER_USER }}
+          privateKey: ${{ secrets.DOCKER_KEY}}
+          local: ./product
+          remote: test-php-site/
+      - name: build_and_run_docker_container
+        uses: garygrossgarten/github-action-ssh@release
+        with:
+          host: ${{ secrets.DOCKER_HOST }}
+          username: ${{ secrets.DOCKER_USER }}
+          privateKey: ${{ secrets.DOCKER_KEY}}
+          command: |
+            cd ~/test-php-site
+            docker build -t test-php-site .
+            docker run -d -p 8080:80 --name mytest test-php-site
+  check:
+    if: always()
+    needs: deploy
+    name: Check the deployed product is functional
+    runs-on: ubuntu-latest
+    steps:
+      - name: check_deployment
+        run: wget -qO- -T 5 $MyTargetURL >/dev/null ; if [ $? != 0 ] ; then exit 1 ; fi
+  scan:
+    if: always()
+    needs: check
+    name: Scan product with Acunetix
+    runs-on: ubuntu-latest
+    steps:
+      - name: install_packages
+        run: sudo apt-get -y install jq
+      - name: checkout_code
+        uses: actions/checkout@v2
+      - name: scan_product
+        env:
+          MyAPIKEY: ${{ secrets.MyAPIKEY }}
+        run: |
+          chmod +x scripts/axscript.sh
+          scripts/axscript.sh
+  destroy:
+    if: always()
+    needs: scan
+    name: Destroy deployment
+    runs-on: ubuntu-latest
+    steps:
+      - name: destroy_deployment
+        uses: garygrossgarten/github-action-ssh@release
+        with:
+          host: ${{ secrets.DOCKER_HOST }}
+          username: ${{ secrets.DOCKER_USER }}
+          privateKey: ${{ secrets.DOCKER_KEY}}
+          command: |
+            docker stop mytest
+            docker rm mytest
+            docker rmi test-php-site
+            rm -rf ~/test-php-site
